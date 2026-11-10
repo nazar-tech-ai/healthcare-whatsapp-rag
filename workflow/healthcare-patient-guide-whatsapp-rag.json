@@ -1,0 +1,610 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "basicAuth",
+        "formTitle": "Upload Patient PDFs",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "pdf",
+              "fieldType": "file",
+              "acceptFileTypes": ".pdf"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7e179b39-63e7-4a63-b2d3-9d925a825e6f",
+      "name": "Form - Upload Patient PDFs",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -512,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  for (const bin of Object.values(item.binary || {})) {\n    out.push({\n      json: { fileName: bin.fileName },\n      binary: { data: bin }\n    });\n  }\n}\nreturn out;"
+      },
+      "id": "9d136e63-40cd-4f86-a86c-43268f021d3c",
+      "name": "Split Files Into Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "46f78d42-33ab-4f5d-b0a1-494001dac12a",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -64,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const MAX = 1500;\nconst OVERLAP = 200;\nconst results = [];\n\n// Optional (local testing only, do not commit real numbers):\n// map an MRN to your own WhatsApp number, e.g. { 'MRN-2026-51067': '923XXXXXXXXX' }\nconst TEST_PHONES = {};\n\n$input.all().forEach((item, idx) => {\n  const text = (item.json.text || '').replace(/\\r/g, '');\n\n  let fileName = '';\n  try { fileName = $('Split Files Into Items').all()[idx].json.fileName || ''; } catch (e) {}\n\n  const names = [...text.matchAll(/Full Name\\s+(.+)/g)].map(m => m[1].trim());\n  const phones = [...text.matchAll(/Phone\\s+(\\+[\\d-]+)/g)].map(m => m[1].trim());\n  const patient = names[1] || 'Unknown';\n  const mrn = (text.match(/MRN-\\d{4}-\\d+/) || [''])[0];\n  const patientPhone = TEST_PHONES[mrn] || (phones[1] || '').replace(/\\D/g, '');\n  const docRef = (text.match(/Document Reference:\\s*(\\S+)/) || [null, ''])[1];\n  const planDate = ((text.match(/Plan Date\\s+(.+)/) || [null, ''])[1] || '').trim();\n\n  const header = `[Patient: ${patient} | MRN: ${mrn} | Plan date: ${planDate} | Ref: ${docRef}]`;\n\n  const sections = text.split(/(?=CLAUSE\\s+\\d+)/).map(s => s.trim()).filter(s => s.length > 30);\n\n  let n = 0;\n  for (const sec of sections) {\n    for (let i = 0; i < sec.length; i += (MAX - OVERLAP)) {\n      results.push({\n        json: {\n          text: `${header}\\n${sec.substring(i, i + MAX)}`,\n          fileName, chunk: n++, patient, mrn, patientPhone\n        }\n      });\n      if (i + MAX >= sec.length) break;\n    }\n  }\n});\n\nreturn results;"
+      },
+      "id": "567e7036-3ae3-40df-aec0-4fddf9a6ebff",
+      "name": "Chunk By Clause With Patient Header",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "medication-n8n",
+          "mode": "list",
+          "cachedResultName": "medication-n8n"
+        },
+        "options": {
+          "clearNamespace": false
+        }
+      },
+      "id": "a32924dc-a16f-4946-a3d1-9224db3446a9",
+      "name": "Pinecone - Insert Chunks",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        384,
+        -192
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "fc425348-c73b-47cf-91d1-24761b9677bc",
+      "name": "Gemini Embeddings - Insert",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        336,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.text }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "fileName",
+                "value": "={{ $json.fileName }}"
+              },
+              {
+                "name": "chunk",
+                "value": "={{ $json.chunk }}"
+              },
+              {
+                "name": "patient",
+                "value": "={{ $json.patient }}"
+              },
+              {
+                "name": "mrn",
+                "value": "={{ $json.mrn }}"
+              },
+              {
+                "name": "patientPhone",
+                "value": "={{ $json.patientPhone }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "0ac0c3ec-fbb5-449d-bab0-7c915dee6a9b",
+      "name": "Chunk Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        560,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "updates": [
+          "messages"
+        ],
+        "options": {}
+      },
+      "id": "e3d71d8d-d424-4935-872f-8bafb2f59981",
+      "name": "WhatsApp - Incoming Message",
+      "type": "n8n-nodes-base.whatsAppTrigger",
+      "typeVersion": 1,
+      "position": [
+        -864,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b4cbd9a2-a642-44ed-96af-fbb8901d8e6c",
+              "leftValue": "={{ $json.messages?.[0]?.text?.body }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "68670a25-c74f-4704-93c3-23aca8517da4",
+      "name": "Is Text Message",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        -464,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}",
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "=You are \"Healthcare Patient Guide\", a WhatsApp assistant that answers questions about patients' medication plans using ONLY the retrieved documents.\n\nPATIENT IDENTITY\n- The system already restricts the knowledge base to the patient registered to this WhatsApp number. You will only receive chunks of that one patient.\n- Never ask the user for an MRN, CNIC or phone number.\n- If the knowledge base returns no chunks for a medical question, reply that this WhatsApp number has no registered medication plan and ask them to contact the clinic. Do not share any medical detail.\n- Never reveal or mention any other patient's information, or that other patients exist.\n- If the user asks about another person, say: \"Main sirf aap ki apni dawaiyon ke bare mein bata sakta hoon.\" (use the user's language)\n\nSEARCHING\n- For any question about medicines, dosage, timing, food instructions, missed dose, side effects, allergies, diet, activity, warnings, follow-up, lab tests or emergency contacts, ALWAYS call the knowledge base tool first.\n- The user may write in Roman Urdu, Urdu or English. Convert the question into a short English search query.\n  Example: \"Amlodipine kitni dafa leni hai\" -> \"Amlodipine dosage timing\".\n- Medication tables list columns Morning, Afternoon, Evening, Night. A dash means no dose at that time. Read each row carefully.\n\nANSWERING\n- Answer ONLY the question asked, from the relevant chunk(s). Do not summarize the whole document unless the user asks for a summary. Merge duplicate information.\n- Reply in the same language as the user (Roman Urdu question -> Roman Urdu answer). Keep it short, plain text, no markdown tables, no ** or #. Short lines are fine.\n- Always mention the medicine name, strength, number of tablets, time of day (with clock time if given) and whether it is with food, when asked about a dose.\n- For greetings or small talk, reply briefly and ask how you can help. Do not use the tool.\n\nSAFETY\n- Never guess, invent, or change a dose, and never advise stopping or adding a medicine. If asked to change a dose, say to consult the prescribing physician.\n- If the user describes severe symptoms or an emergency (severe hypoglycemia, chest pain, high fever, heavy bleeding, difficulty breathing), tell them to contact the emergency number in their plan or the nearest hospital immediately.\n- If no chunk answers the question, reply exactly: \"I couldn't find enough information in the healthcare documents.\" (Roman Urdu users: \"Mujhe healthcare documents mein is sawal ka jawab nahi mila.\")"
+        }
+      },
+      "id": "8bb030aa-d61b-462f-9c26-72f8d2c339be",
+      "name": "Healthcare Patient Guide Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        224,
+        448
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "4f6847a9-4835-4317-b669-000b8d4ca30c",
+      "name": "Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        112,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "08a960d8-3d9b-4363-8028-0e0d6d09717f",
+      "name": "Gemini Fallback Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Search the patient medication plan knowledge base. Results are automatically limited to the patient registered to the current WhatsApp number. Contains medicines, dosage, timing, with-food instructions, administration and missed-dose rules, diet and lifestyle advice, warnings, side effects, allergies, follow-up appointments, lab tests and emergency contacts. Always use this tool before answering any question about the patient's medicines, diagnosis, treatment or follow-up. The query must be in English and describe only the topic, for example \"Amlodipine dosage timing\".",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "medication-n8n",
+          "mode": "list",
+          "cachedResultName": "medication-n8n"
+        },
+        "topK": 8,
+        "useReranker": true,
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "patientPhone",
+                "value": "={{ $('WhatsApp - Incoming Message').first().json.contacts[0].wa_id }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "63ae470d-4fa8-4b32-a1e4-211c630a1710",
+      "name": "Pinecone - Patient Plan Search",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        432,
+        688
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "9ee8ddb8-af83-4f30-bfdf-fb1f8c2c494b",
+      "name": "Gemini Embeddings - Search",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        384,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "topN": 4
+      },
+      "id": "f486a9d5-62fd-4b0d-8ad7-0977b4a68073",
+      "name": "Cohere Reranker",
+      "type": "@n8n/n8n-nodes-langchain.rerankerCohere",
+      "typeVersion": 1,
+      "position": [
+        576,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "YOUR_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "={{ $('WhatsApp - Incoming Message').item.json.contacts[0].wa_id }}",
+        "textBody": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "id": "46e6d048-1f1c-4bb9-a8fa-778f7a37d681",
+      "name": "WhatsApp - Send Reply",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "1558fb86-a6f3-483a-8d25-8b5a2515f5d8",
+              "leftValue": "={{ $json.messages?.[0]?.from }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "1ffa57f0-4205-46cd-90a8-c98f064aa5a1",
+      "name": "Is Real Incoming Message",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        -496,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "75fff82c-0fe2-4ea5-ba9e-436ec8c89290",
+              "name": "chatInput",
+              "value": "={{ $json.messages[0].text.body }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0bf52373-4740-4337-88b3-49565f224dd5",
+      "name": "Set Chat Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -64,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('WhatsApp - Incoming Message').first().json.contacts[0].wa_id }}",
+        "tableName": "chat_histories",
+        "contextWindowLength": 10
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.4,
+      "position": [
+        320,
+        656
+      ],
+      "id": "e7e1289c-143b-4f85-b215-c1cbd0888bf6",
+      "name": "Postgres Chat Memory"
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "YOUR_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "={{ $('WhatsApp - Incoming Message').item.json.contacts[0].wa_id }}",
+        "textBody": "=Barah-e-meharbani apna sawal text mein likh kar bhejein.",
+        "additionalFields": {}
+      },
+      "id": "84cdadfe-4a24-4c48-b8c3-b8103e83f351",
+      "name": "WhatsApp - Send Text Only Notice",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        -192,
+        704
+      ]
+    }
+  ],
+  "connections": {
+    "Form - Upload Patient PDFs": {
+      "main": [
+        [
+          {
+            "node": "Split Files Into Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Files Into Items": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Chunk By Clause With Patient Header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk By Clause With Patient Header": {
+      "main": [
+        [
+          {
+            "node": "Pinecone - Insert Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Embeddings - Insert": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone - Insert Chunks",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Pinecone - Insert Chunks",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp - Incoming Message": {
+      "main": [
+        [
+          {
+            "node": "Is Text Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Text Message": {
+      "main": [
+        [
+          {
+            "node": "Set Chat Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Real Incoming Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Healthcare Patient Guide Agent": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Healthcare Patient Guide Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Fallback Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Healthcare Patient Guide Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Pinecone - Patient Plan Search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Healthcare Patient Guide Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Embeddings - Search": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone - Patient Plan Search",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cohere Reranker": {
+      "ai_reranker": [
+        [
+          {
+            "node": "Pinecone - Patient Plan Search",
+            "type": "ai_reranker",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Real Incoming Message": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp - Send Text Only Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Chat Input": {
+      "main": [
+        [
+          {
+            "node": "Healthcare Patient Guide Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Healthcare Patient Guide Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "name": "Healthcare Patient Guide - WhatsApp RAG"
+}

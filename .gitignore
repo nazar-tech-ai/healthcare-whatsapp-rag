@@ -1,0 +1,21 @@
+# Secrets and local config
+.env
+.env.*
+*.env
+credentials*.json
+*.pem
+*.key
+
+# Real patient documents must never be committed (only fictional samples)
+*.pdf
+!samples/*.pdf
+
+# n8n exports that may contain credential IDs or instance data
+*.n8n-export.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+node_modules/
